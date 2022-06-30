@@ -3,15 +3,13 @@ import sys
 
 
 
-def execute(ip, startIP, returnAddresses = []):
-    print(startIP)
+def execute(ip, returnAddresses = None):
+    if returnAddresses == None:
+        returnAddresses = []
     from iced_x86 import Decoder, Formatter, FormatterSyntax
     EXAMPLE_CODE_BITNESS = 64
     EXAMPLE_CODE = data[RVAtoRawPointer(ip, sectionTable):RVAtoRawPointer(ip, sectionTable)+50]
-
-    print(EXAMPLE_CODE.hex())
-
-    decoder = Decoder(EXAMPLE_CODE_BITNESS, EXAMPLE_CODE, ip=startIP)
+    decoder = Decoder(EXAMPLE_CODE_BITNESS, EXAMPLE_CODE, ip=ip)
     formatter = Formatter(FormatterSyntax.MASM)
 
     formatter.digit_separator = ""
@@ -24,7 +22,7 @@ def execute(ip, startIP, returnAddresses = []):
         #   op0_str = formatter.format_operand(instr, 0)
         #   operands_str = formatter.format_all_operands(instr)
 
-        start_index = instr.ip - startIP
+        start_index = instr.ip - ip
         bytes_str = EXAMPLE_CODE[start_index:start_index + instr.len].hex().upper()
         # Eg. "00007FFAC46ACDB2 488DAC2400FFFFFF     lea       rbp,[rsp-100h]"
         
@@ -33,18 +31,20 @@ def execute(ip, startIP, returnAddresses = []):
         if disasm.startswith("call"):
             destination = int(disasm.split(" ")[-1][:-1],16)
             print("calling", hex(destination), hex(RVAtoRawPointer(destination, sectionTable)))
-            execute(destination, startIP)
-        
+            execute(destination, returnAddresses + [instr.ip])
+
         if disasm.startswith("jmp"):
             if disasm.endswith("]"):
                 destination = int(disasm.split(" ")[-1][1:-2],16)
             else:
                 destination = int(disasm.split(" ")[-1][:-1],16)
-            print(hex(destination))
-            print("jumping to", hex(destination))
-        
+            destRaw = RVAtoRawPointer(destination, sectionTable)
+            if destRaw in importedFunctions:
+                print("jumping to", importedFunctions[destRaw], "returning to", hex(returnAddresses[-1] + 5))
+                execute(returnAddresses[-1] + 5, returnAddresses[:-1])
 
-
+            else:
+                print("jumping to", hex(destination))
 def RVAtoRawPointer(rva, sectionTable):
     sectionIndex = -1
     while sectionIndex+1 < len(sectionTable) and sectionTable[sectionIndex+1][0] <= rva:
@@ -118,6 +118,8 @@ for x in dataDirectories:
     
 importTableAddress, importTableSize = dataDirectories["importTable"]
 
+importedFunctions = {}
+
 readIndex = importTableAddress
 
 if readIndex:
@@ -146,9 +148,11 @@ if readIndex:
             if RVAToIIBN & 0x80000000:
                 RVAToIIBN ^= 0x80000000
                 print("\t",Name, RVAToIIBN, "at", hex(AddressTable))
+                importedFunctions[AddressTable] = f"{Name}_{RVAToIIBN}"
             elif RVAToIIBN & 0x8000000000000000:
                 RVAToIIBN ^= 0x8000000000000000
                 print("\t",Name, RVAToIIBN, "at", hex(AddressTable))
+                importedFunctions[AddressTable] = f"{Name}_{RVAToIIBN}"
             else:
                 RVAToIIBN = RVAtoRawPointer(RVAToIIBN, sectionTable)
                 hint = struct.unpack("=H", data[RVAToIIBN:RVAToIIBN+2])
@@ -157,6 +161,7 @@ if readIndex:
                 while data[RVAToIIBN] != 0:
                     RVAToIIBN+=1
                 print("\t", data[SubNameStart:RVAToIIBN].decode("ascii"), "at", hex(AddressTable))
+                importedFunctions[AddressTable] = data[SubNameStart:RVAToIIBN].decode("ascii")
             OFTIBNreadIndex += 4 + is64*4
             AddressTable += 4 + is64*4
 
@@ -169,4 +174,4 @@ print(is64)
 toRun = data[RVAtoRawPointer(mAddressOfEntryPoint, sectionTable):RVAtoRawPointer(mAddressOfEntryPoint, sectionTable)+71]
 
 
-execute(mAddressOfEntryPoint, mAddressOfEntryPoint)
+execute(mAddressOfEntryPoint)
