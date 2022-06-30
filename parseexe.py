@@ -2,6 +2,49 @@ import struct
 import sys
 
 
+
+def execute(ip, startIP, returnAddresses = []):
+    print(startIP)
+    from iced_x86 import Decoder, Formatter, FormatterSyntax
+    EXAMPLE_CODE_BITNESS = 64
+    EXAMPLE_CODE = data[RVAtoRawPointer(ip, sectionTable):RVAtoRawPointer(ip, sectionTable)+50]
+
+    print(EXAMPLE_CODE.hex())
+
+    decoder = Decoder(EXAMPLE_CODE_BITNESS, EXAMPLE_CODE, ip=startIP)
+    formatter = Formatter(FormatterSyntax.MASM)
+
+    formatter.digit_separator = ""
+    formatter.first_operand_char_index = 10
+
+    for instr in decoder:
+        disasm = formatter.format(instr)
+        # You can also get only the mnemonic string, or only one or more of the operands:
+        #   mnemonic_str = formatter.format_mnemonic(instr, FormatMnemonicOptions.NO_PREFIXES)
+        #   op0_str = formatter.format_operand(instr, 0)
+        #   operands_str = formatter.format_all_operands(instr)
+
+        start_index = instr.ip - startIP
+        bytes_str = EXAMPLE_CODE[start_index:start_index + instr.len].hex().upper()
+        # Eg. "00007FFAC46ACDB2 488DAC2400FFFFFF     lea       rbp,[rsp-100h]"
+        
+        print(f"Next: {instr.ip:016X} {bytes_str:20} {disasm}")
+
+        if disasm.startswith("call"):
+            destination = int(disasm.split(" ")[-1][:-1],16)
+            print("calling", hex(destination), hex(RVAtoRawPointer(destination, sectionTable)))
+            execute(destination, startIP)
+        
+        if disasm.startswith("jmp"):
+            if disasm.endswith("]"):
+                destination = int(disasm.split(" ")[-1][1:-2],16)
+            else:
+                destination = int(disasm.split(" ")[-1][:-1],16)
+            print(hex(destination))
+            print("jumping to", hex(destination))
+        
+
+
 def RVAtoRawPointer(rva, sectionTable):
     sectionIndex = -1
     while sectionIndex+1 < len(sectionTable) and sectionTable[sectionIndex+1][0] <= rva:
@@ -51,6 +94,10 @@ print("Rva, size amount:", mNumberOfRvaAndSizes)
 print("Image Base", mImageBase)
 
 sectionTable = []
+print(len(data))
+
+memory = bytearray()
+print(memory)
 
 for section in range(numberOfSections):
     sectionData = data[readIndex:readIndex+40]
@@ -60,6 +107,7 @@ for section in range(numberOfSections):
     sectionTable.append((mVirtualAddress,mVirtualSize,mPointerToRawData, mSizeOfRawData, mName))
     print(mName,hex(mVirtualAddress),hex(mVirtualSize),hex(mPointerToRawData), hex(mSizeOfRawData))
     
+print(sectionTable)
 
 dataDirectories = {["exportTable", "importTable", "resourceTable", "exceptionTable", "attributeCertificateTableOffset", "baseRelocationTable", "debugData", "architecture", "GlobalPtr", "tls"][x] : x*8+96+is64*16 for x in range(10)}
 for x in dataDirectories:
@@ -73,7 +121,6 @@ importTableAddress, importTableSize = dataDirectories["importTable"]
 readIndex = importTableAddress
 
 if readIndex:
-
     while True:
         importData = struct.unpack("=5I",data[readIndex:readIndex+20])
         readIndex += 20
@@ -88,19 +135,20 @@ if readIndex:
         Name = data[NameStart:NameEnd].decode("ascii")
         
         print(f"From {Name} import")
+
+
         OFTIBNreadIndex = RVAtoRawPointer(OriginalFirstThunk,sectionTable)
-        
+        AddressTable = RVAtoRawPointer(FirstThunk,sectionTable)
         while True:
             RVAToIIBN, = struct.unpack("=Q" if is64 else "=I",data[OFTIBNreadIndex:OFTIBNreadIndex+4 + is64*4])
-            OFTIBNreadIndex += 4 + is64*4
             if RVAToIIBN == 0:
                 break
             if RVAToIIBN & 0x80000000:
                 RVAToIIBN ^= 0x80000000
-                print("\t",Name, RVAToIIBN)
+                print("\t",Name, RVAToIIBN, "at", hex(AddressTable))
             elif RVAToIIBN & 0x8000000000000000:
                 RVAToIIBN ^= 0x8000000000000000
-                print("\t",Name, RVAToIIBN)
+                print("\t",Name, RVAToIIBN, "at", hex(AddressTable))
             else:
                 RVAToIIBN = RVAtoRawPointer(RVAToIIBN, sectionTable)
                 hint = struct.unpack("=H", data[RVAToIIBN:RVAToIIBN+2])
@@ -108,48 +156,17 @@ if readIndex:
                 SubNameStart = RVAToIIBN
                 while data[RVAToIIBN] != 0:
                     RVAToIIBN+=1
-
-                print("\t", data[SubNameStart:RVAToIIBN].decode("ascii"))
+                print("\t", data[SubNameStart:RVAToIIBN].decode("ascii"), "at", hex(AddressTable))
+            OFTIBNreadIndex += 4 + is64*4
+            AddressTable += 4 + is64*4
 
 print(dataDirectories)
 
 print(hex(mBaseOfCode))
 print("Jump to execution start at", hex(RVAtoRawPointer(mAddressOfEntryPoint, sectionTable)))
+print(hex(mAddressOfEntryPoint))
 print(is64)
-toRun = data[RVAtoRawPointer(mAddressOfEntryPoint, sectionTable):RVAtoRawPointer(mAddressOfEntryPoint, sectionTable)+100]
+toRun = data[RVAtoRawPointer(mAddressOfEntryPoint, sectionTable):RVAtoRawPointer(mAddressOfEntryPoint, sectionTable)+71]
 
-from iced_x86 import *
-EXAMPLE_CODE_BITNESS = 64
-EXAMPLE_CODE_RIP = mAddressOfEntryPoint
-EXAMPLE_CODE = toRun
 
-decoder = Decoder(EXAMPLE_CODE_BITNESS, EXAMPLE_CODE, ip=EXAMPLE_CODE_RIP)
-formatter = Formatter(FormatterSyntax.NASM)
-
-formatter.digit_separator = ""
-formatter.first_operand_char_index = 10
-
-for instr in decoder:
-    disasm = formatter.format(instr)
-    # You can also get only the mnemonic string, or only one or more of the operands:
-    #   mnemonic_str = formatter.format_mnemonic(instr, FormatMnemonicOptions.NO_PREFIXES)
-    #   op0_str = formatter.format_operand(instr, 0)
-    #   operands_str = formatter.format_all_operands(instr)
-
-    start_index = instr.ip - EXAMPLE_CODE_RIP
-    bytes_str = EXAMPLE_CODE[start_index:start_index + instr.len].hex().upper()
-    # Eg. "00007FFAC46ACDB2 488DAC2400FFFFFF     lea       rbp,[rsp-100h]"
-    print(f"{instr.ip:016X} {bytes_str:20} {disasm}")
-    
-    if "[" in disasm:
-        memoryAddress = disasm[disasm.find("["): disasm.find("]")-1]
-        while memoryAddress and memoryAddress[0] not in "0123456789":
-            memoryAddress = memoryAddress[1:]
-        try:
-            print(f"{instr.ip:016X} {bytes_str:20} {disasm}", hex(RVAtoRawPointer(int(memoryAddress,16), sectionTable)))
-        except:
-            pass
-# Instruction also supports format specifiers, see the table below
-decoder = Decoder(64, b"\x86\x64\x32\x16", ip=0x1234_5678)
-instr = decoder.decode()
-
+execute(mAddressOfEntryPoint, mAddressOfEntryPoint)
