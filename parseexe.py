@@ -116,7 +116,8 @@ print(dataDirectories)
 print(hex(mBaseOfCode))
 print("Jump to execution start at", hex(RVAtoRawPointer(mAddressOfEntryPoint, sectionTable)))
 print(is64)
-toRun = data[RVAtoRawPointer(mAddressOfEntryPoint, sectionTable):RVAtoRawPointer(mAddressOfEntryPoint, sectionTable)+100]
+toRun = data[RVAtoRawPointer(mAddressOfEntryPoint, sectionTable):RVAtoRawPointer(mAddressOfEntryPoint, sectionTable)+143360]
+
 
 from iced_x86 import *
 EXAMPLE_CODE_BITNESS = 64
@@ -139,7 +140,16 @@ for instr in decoder:
     start_index = instr.ip - EXAMPLE_CODE_RIP
     bytes_str = EXAMPLE_CODE[start_index:start_index + instr.len].hex().upper()
     # Eg. "00007FFAC46ACDB2 488DAC2400FFFFFF     lea       rbp,[rsp-100h]"
-    print(f"{instr.ip:016X} {bytes_str:20} {disasm}")
+    
+    if disasm.startswith("call"):
+        print(f"{instr.ip:016X} {bytes_str:20} {disasm}")
+        #callDest = int(disasm.split(" ")[-1][:-1],16)
+        #callDest = RVAtoRawPointer(callDest, sectionTable)
+        #print(callDest)
+    
+    else:
+        continue
+        
     
     if "[" in disasm:
         memoryAddress = disasm[disasm.find("["): disasm.find("]")-1]
