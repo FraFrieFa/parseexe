@@ -1,14 +1,18 @@
 import struct
 import sys
+from iced_x86 import Decoder, Formatter, FormatterSyntax
+
+def GetSection(rva):
+    sectionIndex = -1
+    while sectionIndex+1 < len(sectionTable) and sectionTable[sectionIndex+1][0] <= rva:
+        sectionIndex+=1
+    section = sectionTable[sectionIndex]
+    return section
 
 
-
-def execute(ip, returnAddresses = None):
-    if returnAddresses == None:
-        returnAddresses = []
-    from iced_x86 import Decoder, Formatter, FormatterSyntax
+def disassemble(ip, size):
     EXAMPLE_CODE_BITNESS = 64
-    EXAMPLE_CODE = data[RVAtoRawPointer(ip, sectionTable):RVAtoRawPointer(ip, sectionTable)+50]
+    EXAMPLE_CODE = data[RVAtoRawPointer(ip, sectionTable):RVAtoRawPointer(ip, sectionTable)+size]
     decoder = Decoder(EXAMPLE_CODE_BITNESS, EXAMPLE_CODE, ip=ip)
     formatter = Formatter(FormatterSyntax.MASM)
 
@@ -24,27 +28,94 @@ def execute(ip, returnAddresses = None):
 
         start_index = instr.ip - ip
         bytes_str = EXAMPLE_CODE[start_index:start_index + instr.len].hex().upper()
-        # Eg. "00007FFAC46ACDB2 488DAC2400FFFFFF     lea       rbp,[rsp-100h]"
-        
-        print(f"Next: {instr.ip:016X} {bytes_str:20} {disasm}")
+        # Eg. "00007FFAC46ACDB2 488DAC2400FFFFFF     lea       rbp,[rsp-100h]"        
+        print(f"{instr.ip:016X} {bytes_str:20} {disasm}")
 
-        if disasm.startswith("call"):
-            destination = int(disasm.split(" ")[-1][:-1],16)
-            print("calling", hex(destination), hex(RVAtoRawPointer(destination, sectionTable)))
-            execute(destination, returnAddresses + [instr.ip])
+def instructionAt(ip):
+    textBytes = data[RVAtoRawPointer(ip, sectionTable):RVAtoRawPointer(ip, sectionTable)+15]
+    decoder = Decoder(64, textBytes, ip=ip)
+    for instr in decoder:
+        return (instr, textBytes[:instr.len])
 
-        if disasm.startswith("jmp"):
-            if disasm.endswith("]"):
-                destination = int(disasm.split(" ")[-1][1:-2],16)
-            else:
-                destination = int(disasm.split(" ")[-1][:-1],16)
-            destRaw = RVAtoRawPointer(destination, sectionTable)
-            if destRaw in importedFunctions:
-                print("jumping to", importedFunctions[destRaw], "returning to", hex(returnAddresses[-1] + 5))
-                execute(returnAddresses[-1] + 5, returnAddresses[:-1])
+def execute(ip):
+    global textDecoded
+    
+    formatter = Formatter(FormatterSyntax.MASM)
+    formatter.digit_separator = ""
+    formatter.first_operand_char_index = 10
+    
+    executionEntries = [ip]
 
-            else:
-                print("jumping to", hex(destination))
+    while len(executionEntries):
+        curIp = executionEntries[-1]
+        executionEntries = executionEntries[:-1]
+        #print("Resuming execution at", hex(curIp))
+        while True:
+            if textDecoded[curIp] != None:
+                #print("Reached already decompiled part at", hex(curIp))
+                break
+            instr, textBytes = instructionAt(curIp)
+            textDecoded[curIp] = instr
+            curIp += instr.len
+            disasm = formatter.format(instr)
+            
+
+            #print(f"Next: {instr.ip:016X} {textBytes.hex():20} {disasm:20}")
+            #input()
+            if disasm.startswith("ret"):
+                
+                #print("Returning")
+                break
+            if disasm.startswith("call"):
+                try:
+                    if disasm.endswith("]"):
+                        destinationLocation = int(disasm[disasm.find("[")+1:disasm.find("]")-1], 16)
+                        if disasm.split(" ")[-3] == "qword":
+                            if GetSection(destinationLocation)[-1] == ".rdata":
+                                
+                                if destinationLocation in importedFunctions:
+                                    print("Calling", importedFunctions[destinationLocation])
+                                else:
+                                    print("Calling address", destinationLocation, "located in rdata")                         
+                    else:
+                        destination = int(disasm.split(" ")[-1][:-1],16)
+                        #print("Calling", hex(destination))
+                        executionEntries.append(instr.ip+instr.len)
+                        curIp = destination
+                except:
+                    print("Difficult call...")
+                    print(f"Next: {instr.ip:016X} {textBytes.hex():20} {disasm:20}")
+
+            if disasm.startswith("jmp"):
+                try:
+                    if disasm.endswith("]"):
+                        destinationLocation = int(disasm[disasm.find("[")+1:disasm.find("]")-1], 16)
+                        if disasm.split(" ")[-3] == "qword":
+                            if GetSection(destinationLocation)[-1] == ".rdata":
+                                if destinationLocation in importedFunctions:
+                                    print("Jumping to", importedFunctions[destinationLocation])
+                                else:
+                                    print("Jumping to address", destinationLocation, "located in rdata")                         
+                    else:
+                        destination = int(disasm.split(" ")[-1][:-1],16)
+                        #print("Jumping to", hex(destination))
+                        curIp = destination
+                except:
+                    print("Difficult jmp")
+                    print(f"Next: {instr.ip:016X} {textBytes.hex():20} {disasm:20}")
+
+            elif disasm.startswith("j"):
+                if disasm.endswith("]"):
+                    pass
+                else:
+                    destination = int(disasm.split(" ")[-1][:-1],16)
+                    #print("Conditional jump to", hex(destination), "registered")
+                    executionEntries.append(destination)
+                
+            
+            
+
+
 def RVAtoRawPointer(rva, sectionTable):
     sectionIndex = -1
     while sectionIndex+1 < len(sectionTable) and sectionTable[sectionIndex+1][0] <= rva:
@@ -140,7 +211,7 @@ if readIndex:
 
 
         OFTIBNreadIndex = RVAtoRawPointer(OriginalFirstThunk,sectionTable)
-        AddressTable = RVAtoRawPointer(FirstThunk,sectionTable)
+        AddressTable = FirstThunk
         while True:
             RVAToIIBN, = struct.unpack("=Q" if is64 else "=I",data[OFTIBNreadIndex:OFTIBNreadIndex+4 + is64*4])
             if RVAToIIBN == 0:
@@ -171,5 +242,10 @@ print(hex(mBaseOfCode))
 print("Jump to execution start at", hex(RVAtoRawPointer(mAddressOfEntryPoint, sectionTable)))
 print(hex(mAddressOfEntryPoint))
 print(is64)
+
+
+for section in sectionTable:
+    if section[-1] == ".text":
+        textDecoded = {x:None for x in range(section[0],section[0]+section[1])}
 
 execute(mAddressOfEntryPoint)
